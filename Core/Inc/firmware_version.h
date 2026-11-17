@@ -1,0 +1,6 @@
+#ifndef FIRMWARE_VERSION_H
+#define FIRMWARE_VERSION_H
+
+#define H863_FIRMWARE_VERSION "V0.03"
+
+#endif

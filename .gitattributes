@@ -1,0 +1,4 @@
+# Preserve the validated CubeMX/C/H/IOC bytes, including existing CRLF.
+* -text
+# Shell entry points must run on Linux/WSL after a fresh clone.
+*.sh text eol=lf
