@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-19",
+  "version": "V0.13",
+  "branch": "milestone/v0.13-display",
+  "tag": "v0.13-display-milestone",
+  "parent": "894ed533779f60f8e0fed16331afd5344832f65b",
+  "delivered_snapshot_files_matched_before_documentation": 63,
+  "firmware_source_manifest_files": 61,
+  "sdk_files_matched": 103,
+  "main_generated_regions_match_parent": true,
+  "firmware_logic_unchanged_from_delivery": true,
+  "builds": [
+    {
+      "configuration": "Debug",
+      "steps": 45,
+      "warnings": 0,
+      "errors": 0,
+      "bin_matches_delivered": true,
+      "hex_matches_delivered": true
+    },
+    {
+      "configuration": "Release",
+      "steps": 45,
+      "warnings": 0,
+      "errors": 0,
+      "bin_matches_delivered": true,
+      "hex_matches_delivered": true
+    }
+  ],
+  "host_tests": {
+    "sanitizers": [
+      "address",
+      "undefined"
+    ],
+    "passed": true,
+    "log_sha256": "2f85c054db396ac6f98742af92a95bf7eac5f56af5cc109c63a9d50f2a3d6abd"
+  },
+  "hardware": {
+    "display_on_first_board_user_confirmed": true,
+    "landscape_CW90_user_confirmed": true,
+    "R111_ohm": 10000,
+    "R119_ohm": 22,
+    "PD6_open_drain_external_pullup_ohm": 10000,
+    "pullup_to": "R119 output",
+    "current_voltage_not_measured": true,
+    "buttons_and_audible_beep_verified": false,
+    "nominal_R119_0ohm_display": "image flicker reported; unresolved",
+    "long_duration_verified": false,
+    "second_board": "V0.07 log: ID FFFF x3; display powered off; unresolved"
+  }
+}

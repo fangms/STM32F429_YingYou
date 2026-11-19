@@ -108,6 +108,17 @@ SSD2828_Status BoardSSD2828_Probe(SSD2828_ProbeReport *report)
                          (unsigned)report->restored_value);
   }
   if (status != SSD2828_OK) {
+    /* Capture GPIO input levels before PowerOff, never claim measured rails.
+       A high MISO / FFFF does not establish whether the bridge is powered. */
+    (void)DebugLog_Printf("[BRIDGE][PINS] before-poweroff GPIO-only EN1V8=%u EN1V2=%u RESET=%u SHUT=%u CS=%u SCK=%u MOSI=%u MISO=%u\r\n",
+                         (unsigned)HAL_GPIO_ReadPin(PMU_EN2_GPIO_Port, PMU_EN2_Pin),
+                         (unsigned)HAL_GPIO_ReadPin(PMU_EN3_GPIO_Port, PMU_EN3_Pin),
+                         (unsigned)HAL_GPIO_ReadPin(SSD2828_LCD_RESET_GPIO_Port, SSD2828_LCD_RESET_Pin),
+                         (unsigned)HAL_GPIO_ReadPin(LCD_SHUT_GPIO_Port, LCD_SHUT_Pin),
+                         (unsigned)HAL_GPIO_ReadPin(SPI_NSS_GPIO_Port, SPI_NSS_Pin),
+                         (unsigned)HAL_GPIO_ReadPin(SPI_CLK_GPIO_Port, SPI_CLK_Pin),
+                         (unsigned)HAL_GPIO_ReadPin(SPI_MOSI_GPIO_Port, SPI_MOSI_Pin),
+                         (unsigned)HAL_GPIO_ReadPin(SPI_MISO_GPIO_Port, SPI_MISO_Pin));
     (void)DebugLog_Printf("[BRIDGE] FAIL status=%u phase=%s; powering down\r\n",
                          (unsigned)status, report->phase);
     PowerOff();
@@ -118,6 +129,25 @@ SSD2828_Status BoardSSD2828_Probe(SSD2828_ProbeReport *report)
   return SSD2828_OK;
 }
 
+static SSD2828_Status InitializePanelCommands(SSD2828_Video *video)
+{
+  DebugLog_SetStage("panel-power");
+  HAL_GPIO_WritePin(PMU_EN1_GPIO_Port, PMU_EN1_Pin, GPIO_PIN_SET);
+  HAL_Delay(20u); /* Both panel rails stable while RESX stays low. */
+  DebugLog_SetStage("bridge-dsi-configure");
+  SSD2828_Status status = SSD2828_VideoConfigure(video);
+  if (status == SSD2828_OK) {
+    (void)DebugLog_Printf("[DSI] PLL=400Mbps/lane lanes=2 LP=10MHz ISR=0x%04X\r\n",
+                         (unsigned)video->last_isr);
+    HAL_GPIO_WritePin(LCD_RST_GPIO_Port, LCD_RST_Pin, GPIO_PIN_SET);
+    panel_released = true;
+    HAL_Delay(120u);
+    DebugLog_SetStage("gc9503-factory-commands");
+    status = GC9503_Initialize(video);
+  }
+  return status;
+}
+
 SSD2828_Status BoardSSD2828_StartPanel(bool rgb_scan_ready, BoardSSD2828_DisplayReport *report)
 {
   if (report == NULL) return SSD2828_INVALID_ARGUMENT;
@@ -125,20 +155,7 @@ SSD2828_Status BoardSSD2828_StartPanel(bool rgb_scan_ready, BoardSSD2828_Display
   if (!rgb_scan_ready || !bridge_ready || panel_released ||
       __get_IPSR() != 0u || __get_PRIMASK() != 0u) return SSD2828_INVALID_ARGUMENT;
   SSD2828_Video video = {.bus = &bus, .delay_ms = HAL_Delay};
-  DebugLog_SetStage("panel-power");
-  HAL_GPIO_WritePin(PMU_EN1_GPIO_Port, PMU_EN1_Pin, GPIO_PIN_SET);
-  HAL_Delay(20u); /* Both panel rails stable while RESX stays low. */
-  DebugLog_SetStage("bridge-dsi-configure");
-  SSD2828_Status status = SSD2828_VideoConfigure(&video);
-  if (status == SSD2828_OK) {
-    (void)DebugLog_Printf("[DSI] PLL=400Mbps/lane lanes=2 LP=10MHz ISR=0x%04X\r\n",
-                         (unsigned)video.last_isr);
-    HAL_GPIO_WritePin(LCD_RST_GPIO_Port, LCD_RST_Pin, GPIO_PIN_SET);
-    panel_released = true;
-    HAL_Delay(120u);
-    DebugLog_SetStage("gc9503-factory-commands");
-    status = GC9503_Initialize(&video);
-  }
+  SSD2828_Status status = InitializePanelCommands(&video);
   if (status == SSD2828_OK) {
     report->commands_sent = true;
     DebugLog_SetStage("dsi-video-enable");
@@ -172,6 +189,45 @@ SSD2828_Status BoardSSD2828_StartPanel(bool rgb_scan_ready, BoardSSD2828_Display
   return SSD2828_OK;
 }
 
+SSD2828_Status BoardSSD2828_CollectPanelEvidence(SSD2828_ProbeReport *probe)
+{
+  if (probe == NULL || !bridge_ready || panel_released ||
+      __get_IPSR() != 0u || __get_PRIMASK() != 0u) return SSD2828_INVALID_ARGUMENT;
+  (void)DebugLog_Write("[PANEL-READ] BEGIN boot-only; VEN=0; no backlight; independent diagnostic init\r\n");
+  SSD2828_Video video = {.bus = &bus, .delay_ms = HAL_Delay};
+  SSD2828_Status status = InitializePanelCommands(&video);
+  unsigned valid = 0u;
+  if (status == SSD2828_OK) {
+    /* Read format first; IDs are not required to run a panel and OTP may vary. */
+    static const uint8_t commands[] = {0x0Cu, 0x0Au, 0x0Bu};
+    for (unsigned i = 0u; i < sizeof commands; ++i) {
+      SSD2828_ReadReport r;
+      status = SSD2828_VideoReadDCS(&video, commands[i], &r);
+      (void)DebugLog_Printf("[PANEL-READ] cmd=0x%02X PRE C6=%04X C7=%04X C2=%04X C3=%04X\r\n",
+                           (unsigned)r.command, (unsigned)r.before_isr, (unsigned)r.before_esr,
+                           (unsigned)r.before_count, (unsigned)r.before_ack);
+      (void)DebugLog_Printf("[PANEL-READ] cmd=0x%02X status=%u valid=%u bytes=%u value=%02X C6=%04X C7=%04X C2=%04X C3=%04X FINAL=%04X phase=%s\r\n",
+                           (unsigned)r.command, (unsigned)status, (unsigned)r.valid,
+                           (unsigned)r.bytes_read, (unsigned)r.value, (unsigned)r.isr,
+                           (unsigned)r.esr, (unsigned)r.count, (unsigned)r.ack,
+                           (unsigned)r.final_isr, video.phase);
+      if (status != SSD2828_OK) break; /* Do not pile more requests on a failed BTA. */
+      ++valid;
+    }
+  }
+  (void)DebugLog_Printf("[PANEL-READ] END valid=%u/3 status=%u phase=%s; no valid reply does not prove absent/broken panel\r\n",
+                       valid, (unsigned)status, video.phase);
+  /* Even successful BTA is isolated from the display run. No soft reset of an
+     active stream: VEN has never been set. Restore by real reset and rail cycle. */
+  (void)DebugLog_Write("[PANEL-READ] RESTORE controlled rails/reset cycle, then original probe + factory init\r\n");
+  PowerOff();
+  HAL_Delay(50u); /* Additional off interval; actual rail decay remains unmeasured. */
+  status = BoardSSD2828_Probe(probe);
+  (void)DebugLog_Printf("[PANEL-READ] RESTORE probe-status=%u; diagnostic values belong to pre-reset init only\r\n",
+                       (unsigned)status);
+  return status; /* A diagnostic timeout is nonfatal; a failed restore is fatal. */
+}
+
 void BoardSSD2828_Shutdown(void)
 {
   PowerOff();
@@ -183,18 +239,16 @@ SSD2828_Status BoardSSD2828_SetSamplingEdge(bool falling, BoardSSD2828_DisplayRe
   *report = (BoardSSD2828_DisplayReport){.phase = "edge-prerequisites"};
   if (!bridge_ready || !panel_released || __get_IPSR() != 0u || __get_PRIMASK() != 0u)
     return SSD2828_INVALID_ARGUMENT;
-  HAL_GPIO_WritePin(PMU_EN4_GPIO_Port, PMU_EN4_Pin, GPIO_PIN_RESET);
   SSD2828_Video video = {.bus = &bus, .delay_ms = HAL_Delay, .ready = true};
   SSD2828_Status status = SSD2828_VideoSetSamplingEdge(&video, falling);
   report->phase = video.phase;
+  if (status == SSD2828_RESTART_REQUIRED) return status; /* Existing stream untouched. */
   if (status != SSD2828_OK) {
     PowerOff();
     return status;
   }
   report->commands_sent = true; /* Existing initialization, no new DCS commands. */
   report->video_enabled = true;
-  HAL_Delay(100u);
-  HAL_GPIO_WritePin(PMU_EN4_GPIO_Port, PMU_EN4_Pin, GPIO_PIN_SET);
   return SSD2828_OK;
 }
 
@@ -205,7 +259,7 @@ SSD2828_Status BoardSSD2828_ReadSnapshot(BoardSSD2828_Snapshot *snapshot)
   if (!bridge_ready || !panel_released || __get_IPSR() != 0u || __get_PRIMASK() != 0u)
     return SSD2828_INVALID_ARGUMENT;
   static const uint8_t registers[] = {0xB0u,0xB1u,0xB2u,0xB3u,0xB4u,0xB5u,0xB6u,0xB7u,
-                                     0xB9u,0xBAu,0xBBu,0xC6u,0xC7u,0xD6u,0xDDu,0xDEu};
+                                     0xB9u,0xBAu,0xBBu,0xC6u,0xC7u,0xD6u,0xDDu,0xDEu,0xEEu,0xEDu};
   _Static_assert(sizeof registers == BOARD_SSD2828_SNAPSHOT_COUNT, "Snapshot count");
   for (unsigned i = 0u; i < sizeof registers; ++i) {
     snapshot->registers[i] = registers[i];
@@ -214,4 +268,24 @@ SSD2828_Status BoardSSD2828_ReadSnapshot(BoardSSD2828_Snapshot *snapshot)
     ++snapshot->count;
   }
   return SSD2828_OK; /* ESR is read only here; sticky evidence is never cleared. */
+}
+
+SSD2828_Status BoardSSD2828_SetBIST(bool enable, BoardSSD2828_DisplayReport *report)
+{
+  if (report == NULL) return SSD2828_INVALID_ARGUMENT;
+  *report = (BoardSSD2828_DisplayReport){.phase = "bist-prerequisites"};
+  if (!bridge_ready || !panel_released || __get_IPSR() != 0u || __get_PRIMASK() != 0u)
+    return SSD2828_INVALID_ARGUMENT;
+  HAL_GPIO_WritePin(PMU_EN4_GPIO_Port, PMU_EN4_Pin, GPIO_PIN_RESET);
+  SSD2828_Video video = {.bus = &bus, .delay_ms = HAL_Delay, .ready = true};
+  SSD2828_Status status = SSD2828_VideoSetBIST(&video, enable);
+  report->phase = video.phase;
+  if (status != SSD2828_OK) {
+    PowerOff();
+    return status;
+  }
+  report->commands_sent = report->video_enabled = true;
+  HAL_Delay(100u);
+  HAL_GPIO_WritePin(PMU_EN4_GPIO_Port, PMU_EN4_Pin, GPIO_PIN_SET);
+  return SSD2828_OK;
 }

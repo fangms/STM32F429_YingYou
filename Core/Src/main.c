@@ -24,8 +24,10 @@
 #include "board_sdram.h"
 #include "debug_log.h"
 #include "firmware_version.h"
+#include "display_config.h"
 #include "board_ssd2828.h"
 #include "board_display_diag.h"
+#include "board_test.h"
   /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,7 +38,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define SCREEN_FRAME0 ((volatile uint16_t *)BOARD_SDRAM_BASE_ADDRESS)
-_Static_assert(DISPLAY_TEST_FRAME_BYTES <= BOARD_SDRAM_SIZE_BYTES, "One frame must fit SDRAM");
+#define SCREEN_FRAME1 ((volatile uint16_t *)(BOARD_SDRAM_BASE_ADDRESS + DISPLAY_TEST_FRAME_BYTES))
+_Static_assert(2u * DISPLAY_TEST_FRAME_BYTES <= BOARD_SDRAM_SIZE_BYTES, "Two test frames must fit SDRAM");
   /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,8 +70,8 @@ static SSD2828_Status bridge_status = SSD2828_INVALID_ARGUMENT;
 static BoardSSD2828_DisplayReport panel_report;
 static SSD2828_Status panel_status = SSD2828_INVALID_ARGUMENT;
 static BoardDisplayDiag display_diag;
+static BoardTest board_test;
 static bool ltdc_scan_active, screen_active;
-static uint32_t heartbeat_tick;
   /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,6 +93,63 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* RM0090 calls the output "Not Data Enable". DEPOL=0 is the physical
+   active-HIGH DE used by Linux/U-Boot STM32 LTDC and required by SSD2828.
+   Observe the MCU pad in wide interior regions, not CDSR internal status.
+   Run ONLY before the bridge video path is enabled. This is logic-level
+   evidence at PF10, not a measurement at the bridge or of setup/hold time. */
+static unsigned DisplayDE_Region(uint32_t position)
+{
+  uint32_t x = (position & LTDC_CPSR_CXPOS) >> LTDC_CPSR_CXPOS_Pos;
+  uint32_t y = (position & LTDC_CPSR_CYPOS) >> LTDC_CPSR_CYPOS_Pos;
+  /* Current scan: HBP=30, VBP=32, active=400x960, totals=450x1004. */
+  if (x < 64u || x > 395u) return 0u;
+  if (y >= 64u && y <= 959u) return 1u;
+  if (y >= 10u && y <= 23u) return 2u; /* Wide vertical back porch. */
+  return 0u;
+}
+
+static void DisplayDE_LogPad(const char *phase)
+{
+  uint32_t counts[2][2] = {{0u, 0u}, {0u, 0u}};
+  uint32_t start = HAL_GetTick();
+  uint32_t polls = 0u;
+  /* Both bounds apply: broken scan/tick must not block panel startup. */
+  while ((uint32_t)(HAL_GetTick() - start) < 120u && polls < 2000000u)
+  {
+    ++polls;
+    uint32_t before = LTDC->CPSR;
+    uint32_t pad = (GPIOF->IDR & GPIO_PIN_10) != 0u;
+    uint32_t after = LTDC->CPSR;
+    unsigned region = DisplayDE_Region(before);
+    uint32_t xb = before >> LTDC_CPSR_CXPOS_Pos;
+    uint32_t xa = after >> LTDC_CPSR_CXPOS_Pos;
+    /* Reject scan boundaries, wrap and samples delayed by interrupts. */
+    if (region != 0u && region == DisplayDE_Region(after) &&
+        (before & LTDC_CPSR_CYPOS) == (after & LTDC_CPSR_CYPOS) &&
+        xa >= xb && xa - xb <= 32u)
+      ++counts[region - 1u][pad];
+  }
+  uint32_t mode = (GPIOF->MODER >> 20u) & 3u;
+  uint32_t af = (GPIOF->AFR[1] >> 8u) & 15u;
+  const char *physical = "INSUFFICIENT";
+  if (mode != 2u || af != 14u) physical = "PIN-CONFIG";
+  else if (counts[0][0] + counts[0][1] >= 32u &&
+           counts[1][0] + counts[1][1] >= 32u)
+  {
+    if (counts[0][0] == 0u && counts[1][1] == 0u) physical = "ACTIVE-HIGH";
+    else if (counts[0][1] == 0u && counts[1][0] == 0u) physical = "ACTIVE-LOW";
+    else physical = "MIXED";
+  }
+  (void)DebugLog_Printf("[DE-PAD] phase=%s GCR=%08lX cache=%08lX PF10mode=%lu AF=%lu active(H/L)=%lu/%lu blank(H/L)=%lu/%lu physical=%s polls=%lu\r\n",
+                       phase, (unsigned long)LTDC->GCR,
+                       (unsigned long)hltdc.Init.DEPolarity,
+                       (unsigned long)mode, (unsigned long)af,
+                       (unsigned long)counts[0][1], (unsigned long)counts[0][0],
+                       (unsigned long)counts[1][1], (unsigned long)counts[1][0],
+                       physical, (unsigned long)polls);
+}
 
 /* USER CODE END 0 */
 
@@ -132,6 +192,7 @@ int main(void)
   MX_SPI2_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  BoardTest_Init(&board_test, HAL_GetTick());
   bridge_status = BoardSSD2828_Probe(&bridge_report);
   if (bridge_status == SSD2828_OK)
   {
@@ -141,8 +202,16 @@ int main(void)
     (void)DebugLog_Write("[LTDC] scan=ON PCLK=27100000Hz totals=450x1004 RGB565\r\n");
     if (BoardDisplayDiag_Prepare(&display_diag, &hltdc, SCREEN_FRAME0, DISPLAY_TEST_FRAME_BYTES))
     {
-      panel_status = BoardSSD2828_StartPanel(true, &panel_report);
-      if (panel_status == SSD2828_OK) screen_active = BoardDisplayDiag_Start(&display_diag);
+      bridge_status = BoardSSD2828_CollectPanelEvidence(&bridge_report);
+      panel_status = bridge_status;
+      if (bridge_status == SSD2828_OK)
+        panel_status = BoardSSD2828_StartPanel(true, &panel_report);
+      BoardTest_SetStartup(&board_test, true, bridge_status == SSD2828_OK,
+                           bridge_report.id_count != 0u ? bridge_report.id[0] : 0u,
+                           panel_status == SSD2828_OK);
+      if (panel_status == SSD2828_OK)
+        screen_active = BoardTest_AttachDisplay(&board_test, &hltdc,
+                                                SCREEN_FRAME0, SCREEN_FRAME1, DISPLAY_TEST_FRAME_BYTES);
     }
     if (!screen_active)
     {
@@ -156,8 +225,10 @@ int main(void)
     (void)DebugLog_Printf("[LTDC] scan=OFF bridge-status=%u phase=%s\r\n",
                          (unsigned)bridge_status, bridge_report.phase);
   }
-  DebugLog_SetStage(screen_active ? "display-diagnostic" : "display-failed-idle");
-  heartbeat_tick = HAL_GetTick();
+  BoardTest_SetStartup(&board_test, true, bridge_status == SSD2828_OK,
+                       bridge_report.id_count != 0u ? bridge_report.id[0] : 0u,
+                       panel_status == SSD2828_OK);
+  DebugLog_SetStage(screen_active ? "board-key-buzzer-test" : "display-failed-key-test");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -167,24 +238,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    HAL_Delay(10u);
-    uint32_t now = HAL_GetTick();
-    if (screen_active && !BoardDisplayDiag_Update(&display_diag, now))
+    HAL_Delay(5u);
+    BoardTest_Update(&board_test, HAL_GetTick());
+    if (screen_active && !board_test.attached)
     {
+      BoardSSD2828_Shutdown();
       screen_active = ltdc_scan_active = false;
-    }
-    now = HAL_GetTick();
-    if ((uint32_t)(now - heartbeat_tick) >= 1000u)
-    {
-      heartbeat_tick = now;
-      (void)DebugLog_Printf("[ALIVE] tick=%lu SDRAM=PASS BRIDGE=%s LTDC=%s PANEL=%s DIAG=%s EDGE=%s STEP=%u ERRORS=%lu\r\n",
-                           (unsigned long)now,
-                           bridge_status == SSD2828_OK ? "PASS" : "FAIL",
-                           ltdc_scan_active ? "SCAN" : "OFF",
-                           panel_status == SSD2828_OK ? "INIT-SENT" : "FAIL",
-                           screen_active ? "RUN" : "STOP",
-                           display_diag.falling ? "FALLING" : "RISING",
-                           display_diag.step + 1u, (unsigned long)display_diag.errors);
     }
   }
   /* USER CODE END 3 */
@@ -412,7 +471,14 @@ static void MX_LTDC_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN LTDC_Init 2 */
-
+  /* Keep generated/IOC content intact until the user selects DE Active Low
+     in CubeMX. Sync both the HAL cache and the actual non-shadow GCR bit.
+     Bridge VEN is still 0 here, so changing DE cannot interrupt video. */
+  DisplayDE_LogPad("generated");
+  hltdc.Init.DEPolarity = LTDC_DEPOLARITY_AL;
+  CLEAR_BIT(hltdc.Instance->GCR, LTDC_GCR_DEPOL);
+  __DSB();
+  DisplayDE_LogPad("ssd2828");
   /* USER CODE END LTDC_Init 2 */
 
 }
@@ -485,12 +551,18 @@ static void MX_UART5_Init(void)
   /* USER CODE BEGIN UART5_Init 2 */
   DebugLog_Init(&huart5);
   DebugLog_SetStage("uart5-ready");
-  (void)DebugLog_Write("\r\n[BOOT] H863 " H863_FIRMWARE_VERSION ": screen isolation BG/FB + PCLK edge (GC9503 BOE3.99)\r\n");
+  (void)DebugLog_Write("\r\n[BOOT] H863 " H863_FIRMWARE_VERSION ": CW90 960x400 KEY/BEEP test; DE active-HIGH (DEPOL=0) + pad check; PD6 open-drain; boot panel-read + bridge/panel restart; FIXED " H863_DISPLAY_FIXED_LABEL "; GC9503 BOE3.99\r\n");
   (void)DebugLog_Printf("[CLOCK] SYSCLK=%lu HCLK=%lu PCLK1=%lu PCLK2=%lu Hz\r\n",
                        (unsigned long)HAL_RCC_GetSysClockFreq(),
                        (unsigned long)HAL_RCC_GetHCLKFreq(),
                        (unsigned long)HAL_RCC_GetPCLK1Freq(),
                        (unsigned long)HAL_RCC_GetPCLK2Freq());
+  /* Register configuration only: a 1V8 reset high is not a 3V3 GPIO IDR test. */
+  (void)DebugLog_Printf("[RESET] PD6 mode=%lu type=%lu pull=%lu latch=%lu; external 1V8 pull-up required (GPIO config, not volts)\r\n",
+                       (unsigned long)((LCD_RST_GPIO_Port->MODER >> 12u) & 3u),
+                       (unsigned long)((LCD_RST_GPIO_Port->OTYPER >> 6u) & 1u),
+                       (unsigned long)((LCD_RST_GPIO_Port->PUPDR >> 12u) & 3u),
+                       (unsigned long)((LCD_RST_GPIO_Port->ODR >> 6u) & 1u));
   /* USER CODE END UART5_Init 2 */
 
 }
@@ -828,7 +900,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  /* Keep RESET low while overriding generated push-pull mode. A released
+     open drain requires an external pull-up to the panel's switched 1V8. */
+  HAL_GPIO_WritePin(LCD_RST_GPIO_Port, LCD_RST_Pin, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = LCD_RST_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LCD_RST_GPIO_Port, &GPIO_InitStruct);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 

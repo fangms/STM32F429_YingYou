@@ -20,7 +20,9 @@ typedef enum {
   SSD2828_ID_MISMATCH,
   SSD2828_REGISTER_MISMATCH,
   SSD2828_RESTORE_FAILED,
-  SSD2828_WAIT_TIMEOUT
+  SSD2828_WAIT_TIMEOUT,
+  SSD2828_RESTART_REQUIRED,
+  SSD2828_RESPONSE_INVALID
 } SSD2828_Status;
 
 typedef struct {
@@ -36,6 +38,9 @@ typedef struct {
 SSD2828_Status SSD2828_BusInit(SSD2828_Bus *bus, const SSD2828_IO *io);
 SSD2828_Status SSD2828_WriteRegister(SSD2828_Bus *bus, uint8_t reg, uint16_t value);
 SSD2828_Status SSD2828_ReadRegister(SSD2828_Bus *bus, uint8_t reg, uint16_t *value);
+/* 8bit-interface RX FIFO: check C6.RDR before a single 26-clock FF read.
+   Unlike a local register, FF must never be read as a 16bit word here. */
+SSD2828_Status SSD2828_ReadReturnByte(SSD2828_Bus *bus, uint8_t *value);
 /* 8bit interface FIFO: exact byte count, including the DCS command; no padding. */
 SSD2828_Status SSD2828_WritePacket(SSD2828_Bus *bus, const uint8_t *bytes, uint16_t length);
 /* Run with bridge freshly reset and video disabled; restores VICR4 after testing. */

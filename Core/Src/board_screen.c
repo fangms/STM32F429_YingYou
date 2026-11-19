@@ -1,4 +1,5 @@
 #include "board_screen.h"
+#include "display_config.h"
 
 bool BoardScreen_Init(BoardScreen *s, LTDC_HandleTypeDef *ltdc,
                       volatile uint16_t *frame0, volatile uint16_t *frame1)
@@ -33,7 +34,8 @@ bool BoardScreen_Update(BoardScreen *s, uint32_t tick)
   s->last_tick += elapsed * 1000u;
   s->seconds += elapsed;
   unsigned back = s->front ^ 1u;
-  if (!BootScreen_Draw(s->frames[back], DISPLAY_TEST_FRAME_BYTES, s->seconds, s->scan_error)) return false;
+  if (!BootScreen_DrawOriented(s->frames[back], DISPLAY_TEST_FRAME_BYTES, s->seconds,
+                               s->scan_error, (DisplayRotation)H863_DISPLAY_ROTATION)) return false;
   __DSB();
   if (HAL_LTDC_SetAddress_NoReload(s->ltdc, (uint32_t)(uintptr_t)s->frames[back], 0u) != HAL_OK) {
     s->scan_error = true;

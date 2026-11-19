@@ -94,13 +94,23 @@ typedef struct { uint32_t Pin, Mode, Pull, Speed; } GPIO_InitTypeDef;
 #define GPIO_SPEED_FREQ_LOW 0u
 void HAL_GPIO_Init(GPIO_TypeDef *, GPIO_InitTypeDef *);
 typedef struct {
-  uint32_t CR, WHPCR, WVPCR, PFCR, CACR, BFCR, CFBAR, CFBLR, CFBLNR;
+  uint32_t CR, WHPCR, WVPCR, PFCR, CACR, BFCR, CFBAR, CFBLR, CFBLNR, DCCR;
 } LTDC_Layer_TypeDef;
 typedef struct {
   uint32_t ISR, ICR, SRCR, GCR, SSCR, BPCR, AWCR, TWCR, BCCR, CPSR, CDSR;
   LTDC_Layer_TypeDef layers[2];
 } LTDC_TypeDef;
-typedef struct { LTDC_TypeDef *Instance; uint32_t address; } LTDC_HandleTypeDef;
+typedef struct { uint8_t Blue, Green, Red, Reserved; } LTDC_ColorTypeDef;
+typedef struct {
+  uint32_t WindowX0, WindowX1, WindowY0, WindowY1, PixelFormat, Alpha, Alpha0;
+  uint32_t BlendingFactor1, BlendingFactor2, FBStartAdress, ImageWidth, ImageHeight;
+  LTDC_ColorTypeDef Backcolor;
+} LTDC_LayerCfgTypeDef;
+typedef struct {
+  LTDC_TypeDef *Instance;
+  LTDC_LayerCfgTypeDef LayerCfg[2];
+  uint32_t State, address;
+} LTDC_HandleTypeDef;
 #define LTDC_ISR_FUIF 2u
 #define LTDC_ISR_TERRIF 4u
 #define LTDC_ICR_CFUIF 2u
@@ -108,9 +118,12 @@ typedef struct { LTDC_TypeDef *Instance; uint32_t address; } LTDC_HandleTypeDef;
 #define LTDC_SRCR_VBR 2u
 #define LTDC_LxCR_LEN 1u
 #define LTDC_GCR_LTDCEN 1u
+#define LTDC_BLENDING_FACTOR1_PAxCA 0x600u
+#define LTDC_BLENDING_FACTOR2_PAxCA 0x7u
 #define LTDC_LAYER(h, layer) (&((h)->Instance->layers[layer]))
 #define __HAL_LTDC_LAYER_ENABLE(h, layer) (LTDC_LAYER(h, layer)->CR |= LTDC_LxCR_LEN)
 #define __HAL_LTDC_LAYER_DISABLE(h, layer) (LTDC_LAYER(h, layer)->CR &= ~LTDC_LxCR_LEN)
 #define __HAL_LTDC_DISABLE(h) ((h)->Instance->GCR &= ~LTDC_GCR_LTDCEN)
 HAL_StatusTypeDef HAL_LTDC_SetAddress_NoReload(LTDC_HandleTypeDef *, uint32_t, uint32_t);
+HAL_StatusTypeDef TestHAL_LTDC_SetAddress_NoReload(LTDC_HandleTypeDef *, uint32_t, uint32_t);
 #endif

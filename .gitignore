@@ -20,6 +20,8 @@ compile_commands.json
 *.ppm
 
 # Local editor, OS and secret files
+/.clangd
+/.settings/
 .vscode/
 .idea/
 .vs/

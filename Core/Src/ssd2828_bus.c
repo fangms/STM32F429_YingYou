@@ -105,12 +105,28 @@ SSD2828_Status SSD2828_WriteRegister(SSD2828_Bus *bus, uint8_t reg, uint16_t val
 SSD2828_Status SSD2828_ReadRegister(SSD2828_Bus *bus, uint8_t reg, uint16_t *value)
 {
   uint8_t low = 0u, high = 0u;
-  if (!Valid(bus) || reg < REG_DIR || value == NULL) return SSD2828_INVALID_ARGUMENT;
+  if (!Valid(bus) || reg < REG_DIR || reg == 0xFFu || value == NULL)
+    return SSD2828_INVALID_ARGUMENT;
   bool success = Begin(bus) && WriteByte(bus, false, reg) &&
                  WriteByte(bus, false, READ_COMMAND) &&
                  ReadByte(bus, &low) && ReadByte(bus, &high);
   SSD2828_Status status = End(bus, success);
   if (status == SSD2828_OK) *value = (uint16_t)(low | ((uint16_t)high << 8u));
+  return status;
+}
+
+SSD2828_Status SSD2828_ReadReturnByte(SSD2828_Bus *bus, uint8_t *value)
+{
+  if (!Valid(bus) || value == NULL) return SSD2828_INVALID_ARGUMENT;
+  uint16_t isr = 0u;
+  SSD2828_Status status = SSD2828_ReadRegister(bus, 0xC6u, &isr);
+  if (status != SSD2828_OK) return status;
+  if ((isr & 1u) == 0u) return SSD2828_WAIT_TIMEOUT;
+  uint8_t data = 0u;
+  bool success = Begin(bus) && WriteByte(bus, false, 0xFFu) &&
+                 WriteByte(bus, false, READ_COMMAND) && ReadByte(bus, &data);
+  status = End(bus, success);
+  if (status == SSD2828_OK) *value = data;
   return status;
 }
 

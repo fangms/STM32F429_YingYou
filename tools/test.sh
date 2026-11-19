@@ -7,3 +7,4 @@ case "$output_root/" in
 esac
 sh "$repo_root/tests/display/run_tests.sh" "$repo_root" "$output_root/display"
 sh "$repo_root/tests/sdram/run_tests.sh" "$repo_root" "$output_root/sdram"
+sh "$repo_root/tests/board_test/run_tests.sh" "$repo_root" "$output_root/board_test"

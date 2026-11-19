@@ -55,6 +55,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/gc9503_panel.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/ssd2828_video.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/board_display_diag.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/board_test.c
 )
 
 # Add include paths

@@ -11,17 +11,23 @@ typedef struct {
 } BoardSSD2828_DisplayReport;
 
 SSD2828_Status BoardSSD2828_Probe(SSD2828_ProbeReport *report);
+/* Optional boot diagnostic, after Probe and before StartPanel. Reads 0C/0A/0B,
+   always powers down/resets and probes again. Return value is RESTORE status,
+   not panel acceptance; detailed diagnostic results are printed separately. */
+SSD2828_Status BoardSSD2828_CollectPanelEvidence(SSD2828_ProbeReport *probe);
 /* Call once after probe PASS and LTDC starts with valid pixels or a disabled layer/background.
    Boot-only; on failure panel/bridge power and backlight are shut down. */
 SSD2828_Status BoardSSD2828_StartPanel(bool rgb_scan_ready, BoardSSD2828_DisplayReport *report);
 
-#define BOARD_SSD2828_SNAPSHOT_COUNT 16u
+#define BOARD_SSD2828_SNAPSHOT_COUNT 18u
 typedef struct {
   uint8_t registers[BOARD_SSD2828_SNAPSHOT_COUNT];
   uint16_t values[BOARD_SSD2828_SNAPSHOT_COUNT];
   unsigned count;
 } BoardSSD2828_Snapshot;
 SSD2828_Status BoardSSD2828_ReadSnapshot(BoardSSD2828_Snapshot *snapshot);
+/* Active panel: same edge is read-only; alternate edge requires a full restart. */
 SSD2828_Status BoardSSD2828_SetSamplingEdge(bool falling, BoardSSD2828_DisplayReport *report);
+SSD2828_Status BoardSSD2828_SetBIST(bool enable, BoardSSD2828_DisplayReport *report);
 void BoardSSD2828_Shutdown(void);
 #endif
